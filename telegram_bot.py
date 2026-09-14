@@ -1,4 +1,4 @@
-# telegram_bot.py - ВЕРСИЯ 3.1 (с поддержкой громкости через HA)
+# telegram_bot.py - ВЕРСИЯ 3.2 (с ТВ и датчиками)
 
 import logging
 import os
@@ -15,12 +15,15 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from llama_cpp import Llama
 import whisper
 
-# Импортируем функции HA (включая новую handle_volume)
+# Импортируем функции HA
 from ha_integration import (
     get_ha_time,
     get_ha_date,
     get_ha_datetime,
-    handle_volume
+    handle_volume,
+    turn_on_tv,
+    turn_off_tv,
+    handle_temperature
 )
 
 # ============================================================
@@ -184,44 +187,43 @@ def get_generation_config(query_type):
 def detect_intent(text):
     text_lower = text.lower()
     
-    # Время
+    # ===== ТЕЛЕВИЗОР (включить/выключить) =====
+    if any(word in text_lower for word in ["телевизор", "телек", "тв"]):
+        if any(word in text_lower for word in ["включи", "вкл", "зажги", "вруби"]):
+            return "tv_on", {}
+        elif any(word in text_lower for word in ["выключи", "выкл", "погаси", "выруби"]):
+            return "tv_off", {}
+    
+    # ===== ТЕМПЕРАТУРА / ВЛАЖНОСТЬ =====
+    if any(word in text_lower for word in ["температур", "градус", "влажност"]):
+        return "sensor", {"text": text}
+    
+    # ===== ГРОМКОСТЬ =====
+    volume_keywords = ["громк", "громче", "тише", "звук", "громкость", "чуть", "еще"]
+    if any(word in text_lower for word in volume_keywords):
+        return "volume", {"text": text}
+    
+    # ===== ВРЕМЯ =====
     time_keywords = ["время", "часов", "час", "сколько времени", "который час", "скажи время", "времени", "сколько сейчас", "текущее время", "покажи время"]
     if any(word in text_lower for word in time_keywords):
         return "time", {}
     
-    # Дата
+    # ===== ДАТА =====
     date_keywords = ["дата", "число", "какой сегодня", "сегодняшняя дата"]
     if any(word in text_lower for word in date_keywords):
         return "date", {}
     
-    # Температура
-    temp_keywords = ["температур", "градус", "холодно", "жарко", "тепло", "сколько градусов"]
-    if any(word in text_lower for word in temp_keywords):
-        return "temperature", {"text": text}
-    
-    # Погода
+    # ===== ПОГОДА (заготовка) =====
     weather_keywords = ["погод", "дождь", "солнце", "облачно", "ветер", "тучи"]
     if any(word in text_lower for word in weather_keywords):
         return "weather", {"text": text}
     
-    # Свет
+    # ===== СВЕТ =====
     if "свет" in text_lower:
         if any(word in text_lower for word in ["включи", "вкл", "зажги"]):
             return "light_on", {"room": extract_room(text)}
         elif any(word in text_lower for word in ["выключи", "выкл", "погаси"]):
             return "light_off", {"room": extract_room(text)}
-    
-    # Телевизор (старая логика — оставлена для совместимости)
-    if any(word in text_lower for word in ["телек", "телевизор", "тв"]):
-        if "громче" in text_lower:
-            return "tv_volume_up", {}
-        elif "тише" in text_lower:
-            return "tv_volume_down", {}
-    
-    # ===== ГРОМКОСТЬ (НОВАЯ ЛОГИКА ЧЕРЕЗ HA) =====
-    volume_keywords = ["громк", "громче", "тише", "звук", "громкость", "чуть", "еще"]
-    if any(word in text_lower for word in volume_keywords):
-        return "volume", {"text": text}
     
     return "unknown", {}
 
@@ -242,23 +244,14 @@ def handle_time():
 def handle_date():
     return get_ha_date()
 
-def handle_temperature(text):
-    return "🌡️ Температура в доме: 24°C"
-
-def handle_weather(text):
-    return "☀️ На улице солнечно, +25°C"
-
 def handle_light_on(room):
     return f"💡 Включаю свет в {room}"
 
 def handle_light_off(room):
     return f"💡 Выключаю свет в {room}"
 
-def handle_tv_volume_up():
-    return "🔊 Увеличиваю громкость телевизора"
-
-def handle_tv_volume_down():
-    return "🔉 Уменьшаю громкость телевизора"
+def handle_weather(text):
+    return "☀️ На улице солнечно, +25°C"  # заготовка
 
 # ============================================================
 # 11. ГЕНЕРАЦИЯ ОТВЕТА (LLM)
@@ -311,10 +304,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"🎤 Распознано: {text}")
         
-        # Обработка текста (как в handle_message)
         user_id = update.effective_user.id
         is_group = update.effective_chat.type in ["group", "supergroup"]
-        is_private = update.effective_chat.type == "private"
         
         if is_group:
             clean_text, should_reply = extract_query(text)
@@ -328,25 +319,26 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Слушаю...")
             return
         
-        # Детектим интент
         intent, params = detect_intent(clean_text)
         
         if intent == "time":
             reply = handle_time()
         elif intent == "date":
             reply = handle_date()
-        elif intent == "temperature":
+        elif intent == "sensor":
             reply = handle_temperature(params.get("text", ""))
+            if reply is None:
+                reply = "Не понял, какой датчик?"
+        elif intent == "tv_on":
+            success, reply = turn_on_tv()
+        elif intent == "tv_off":
+            success, reply = turn_off_tv()
         elif intent == "weather":
             reply = handle_weather(params.get("text", ""))
         elif intent == "light_on":
             reply = handle_light_on(params.get("room", "комната"))
         elif intent == "light_off":
             reply = handle_light_off(params.get("room", "комната"))
-        elif intent == "tv_volume_up":
-            reply = handle_tv_volume_up()
-        elif intent == "tv_volume_down":
-            reply = handle_tv_volume_down()
         elif intent == "volume":
             reply = handle_volume(params.get("text", ""))
             if reply is None:
@@ -370,8 +362,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💡 Я понимаю команды:\n"
         f"• 'сколько время?' — покажу время\n"
         f"• 'какая дата?' — покажу дату\n"
-        f"• 'включи свет в гостиной' — управление светом\n"
-        f"• 'сделай громче телек' — управление ТВ\n"
+        f"• 'включи/выключи телевизор' — управление ТВ\n"
+        f"• 'сколько градусов на улице' — температура\n"
+        f"• 'какая влажность у Миши' — влажность\n"
         f"• 'громкость 50' — установить громкость\n"
         f"• 'еще громче' — увеличить громкость\n"
         f"• 'выключи звук' — выключить звук\n"
@@ -449,18 +442,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = handle_time()
         elif intent == "date":
             reply = handle_date()
-        elif intent == "temperature":
+        elif intent == "sensor":
             reply = handle_temperature(params.get("text", ""))
+            if reply is None:
+                reply = "Не понял, какой датчик?"
+        elif intent == "tv_on":
+            success, reply = turn_on_tv()
+        elif intent == "tv_off":
+            success, reply = turn_off_tv()
         elif intent == "weather":
             reply = handle_weather(params.get("text", ""))
         elif intent == "light_on":
             reply = handle_light_on(params.get("room", "комната"))
         elif intent == "light_off":
             reply = handle_light_off(params.get("room", "комната"))
-        elif intent == "tv_volume_up":
-            reply = handle_tv_volume_up()
-        elif intent == "tv_volume_down":
-            reply = handle_tv_volume_down()
         elif intent == "volume":
             reply = handle_volume(params.get("text", ""))
             if reply is None:

@@ -43,3 +43,13 @@ models/
 # Системные файлы
 .DS_Store
 Thumbs.db
+
+# Backups
+*.back
+
+# Tests (локальные)
+test/
+test_*.py
+
+# Voice cache
+voice/__pycache__/

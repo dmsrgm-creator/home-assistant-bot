@@ -144,3 +144,130 @@ def handle_volume(text):
         return "🔇 Звук выключен" if success else msg
     
     return None  # Не распознано
+
+
+
+# ============================================================
+# ФУНКЦИИ ДЛЯ ТЕМПЕРАТУРЫ / ВЛАЖНОСТИ
+# ============================================================
+
+def get_ha_sensor(sensor_name):
+    """
+    Универсальная функция для получения значения сенсора.
+    Пример: get_ha_sensor("sensor.ulitsa_temperature")
+    """
+    url = f"{HA_URL}/api/states/{sensor_name}"
+    headers = {
+        "Authorization": f"Bearer {HA_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if "state" in data:
+                return data["state"]
+            else:
+                return None
+        else:
+            return None
+    except Exception as e:
+        print(f"Ошибка получения сенсора {sensor_name}: {e}")
+        return None
+
+# Словарь сенсоров: ключевые слова → sensor_id
+SENSORS = {
+    # Температура
+    "улица": "sensor.ulitsa_temperature",
+    "улице": "sensor.ulitsa_temperature",
+    "спальня": "sensor.bedroom_temperature",
+    "спальне": "sensor.bedroom_temperature",
+    "миша": "sensor.komnatamishi_temperature",
+    "миши": "sensor.komnatamishi_temperature",
+    "мишина": "sensor.komnatamishi_temperature",
+    "вика": "sensor.komnataviki_temperature",
+    "вики": "sensor.komnataviki_temperature",
+    "викина": "sensor.komnataviki_temperature",
+    
+    # Влажность
+    "влажность улица": "sensor.ulitsa_humidity",
+    "влажность спальня": "sensor.bedroom_humidity",
+    "влажность миша": "sensor.komnatamishi_humidity",
+    "влажность вика": "sensor.komnataviki_humidity",
+}
+
+def handle_temperature(text):
+    """
+    Обрабатывает запрос температуры.
+    Пример: "сколько градусов на улице" → "На улице +15°C"
+    """
+    text_lower = text.lower()
+    
+    # Ищем сенсор по ключевым словам
+    sensor_id = None
+    room_name = None
+    
+    for keyword, sensor in SENSORS.items():
+        if keyword in text_lower:
+            sensor_id = sensor
+            room_name = keyword
+            break
+    
+    if sensor_id is None:
+        return None  # не распознали
+    
+    # Получаем значение
+    value = get_ha_sensor(sensor_id)
+    if value is None:
+        return "Не могу получить данные с датчика"
+    
+    # Форматируем ответ
+    if "temperature" in sensor_id:
+        return f"На {room_name} {value} градусов"
+    elif "humidity" in sensor_id:
+        return f"Влажность на {room_name} {value} процентов"
+    
+    return f"{value}"
+
+# ============================================================
+# УПРАВЛЕНИЕ ТЕЛЕВИЗОРОМ
+# ============================================================
+
+TV_ENTITY = "remote.televizor_v_spalne"
+
+def turn_on_tv():
+    """Включает телевизор в спальне"""
+    url = f"{HA_URL}/api/services/remote/turn_on"
+    headers = {
+        "Authorization": f"Bearer {HA_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {"entity_id": TV_ENTITY}
+    
+    try:
+        response = requests.post(url, json=data, headers=headers, timeout=5)
+        if response.status_code in [200, 201]:
+            return True, "📺 Включаю телевизор"
+        else:
+            return False, f"❌ Ошибка: {response.status_code}"
+    except Exception as e:
+        return False, f"❌ Ошибка: {str(e)}"
+
+def turn_off_tv():
+    """Выключает телевизор в спальне"""
+    url = f"{HA_URL}/api/services/remote/turn_off"
+    headers = {
+        "Authorization": f"Bearer {HA_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {"entity_id": TV_ENTITY}
+    
+    try:
+        response = requests.post(url, json=data, headers=headers, timeout=5)
+        if response.status_code in [200, 201]:
+            return True, "📺 Выключаю телевизор"
+        else:
+            return False, f"❌ Ошибка: {response.status_code}"
+    except Exception as e:
+        return False, f"❌ Ошибка: {str(e)}"
