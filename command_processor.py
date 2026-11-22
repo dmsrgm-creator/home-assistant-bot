@@ -146,7 +146,8 @@ def process_command(text, source="telegram"):
         reply = handle_volume(params.get("text", ""))
         if reply is None:
             return {"reply": "Не понял команду громкости", "speak": False, "success": False, "intent": intent}
-        return {"reply": reply, "speak": False, "success": True, "intent": intent}
+        success = not reply.startswith("❌")
+        return {"reply": reply, "speak": False, "success": success, "intent": intent}
     
     # ============================================================
     # СВЕТ (заготовка)

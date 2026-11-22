@@ -90,7 +90,7 @@ def call_ha_script(script_name, data=None):
     }
     
     try:
-        response = requests.post(url, json=data, headers=headers, timeout=5)
+        response = requests.post(url, json=data, headers=headers, timeout=10)
         if response.status_code in [200, 201]:
             return True, "✅ Команда выполнена"
         else:
