@@ -1,4 +1,4 @@
-# telegram_bot.py - ВЕРСИЯ 3.2 (с ТВ и датчиками)
+# telegram_bot.py - ВЕРСИЯ 3.3 (использует command_processor)
 
 import logging
 import os
@@ -15,16 +15,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from llama_cpp import Llama
 import whisper
 
-# Импортируем функции HA
-from ha_integration import (
-    get_ha_time,
-    get_ha_date,
-    get_ha_datetime,
-    handle_volume,
-    turn_on_tv,
-    turn_off_tv,
-    handle_temperature
-)
+# Импорт общей логики
+from command_processor import process_command
+from ha_integration import get_ha_time, get_ha_date
 
 # ============================================================
 # 1. ЗАГРУЗКА ПЕРЕМЕННЫХ ИЗ .env
@@ -181,80 +174,7 @@ def get_generation_config(query_type):
     return configs.get(query_type, configs["dialogue"])
 
 # ============================================================
-# 9. ГИБРИДНЫЙ ДЕТЕКТ КОМАНД (INTENT DETECTION)
-# ============================================================
-
-def detect_intent(text):
-    text_lower = text.lower()
-    
-    # ===== ТЕЛЕВИЗОР (включить/выключить) =====
-    if any(word in text_lower for word in ["телевизор", "телек", "тв"]):
-        if any(word in text_lower for word in ["включи", "вкл", "зажги", "вруби"]):
-            return "tv_on", {}
-        elif any(word in text_lower for word in ["выключи", "выкл", "погаси", "выруби"]):
-            return "tv_off", {}
-    
-    # ===== ТЕМПЕРАТУРА / ВЛАЖНОСТЬ =====
-    if any(word in text_lower for word in ["температур", "градус", "влажност"]):
-        return "sensor", {"text": text}
-    
-    # ===== ГРОМКОСТЬ =====
-    volume_keywords = ["громк", "громче", "тише", "звук", "громкость", "чуть", "еще"]
-    if any(word in text_lower for word in volume_keywords):
-        return "volume", {"text": text}
-    
-    # ===== ВРЕМЯ =====
-    time_keywords = ["время", "часов", "час", "сколько времени", "который час", "скажи время", "времени", "сколько сейчас", "текущее время", "покажи время"]
-    if any(word in text_lower for word in time_keywords):
-        return "time", {}
-    
-    # ===== ДАТА =====
-    date_keywords = ["дата", "число", "какой сегодня", "сегодняшняя дата"]
-    if any(word in text_lower for word in date_keywords):
-        return "date", {}
-    
-    # ===== ПОГОДА (заготовка) =====
-    weather_keywords = ["погод", "дождь", "солнце", "облачно", "ветер", "тучи"]
-    if any(word in text_lower for word in weather_keywords):
-        return "weather", {"text": text}
-    
-    # ===== СВЕТ =====
-    if "свет" in text_lower:
-        if any(word in text_lower for word in ["включи", "вкл", "зажги"]):
-            return "light_on", {"room": extract_room(text)}
-        elif any(word in text_lower for word in ["выключи", "выкл", "погаси"]):
-            return "light_off", {"room": extract_room(text)}
-    
-    return "unknown", {}
-
-def extract_room(text):
-    rooms = ["гостиная", "кухня", "спальня", "ванная", "коридор", "комната"]
-    for room in rooms:
-        if room in text.lower():
-            return room
-    return "комната"
-
-# ============================================================
-# 10. ОБРАБОТЧИКИ НАВЫКОВ (SKILLS)
-# ============================================================
-
-def handle_time():
-    return get_ha_time()
-
-def handle_date():
-    return get_ha_date()
-
-def handle_light_on(room):
-    return f"💡 Включаю свет в {room}"
-
-def handle_light_off(room):
-    return f"💡 Выключаю свет в {room}"
-
-def handle_weather(text):
-    return "☀️ На улице солнечно, +25°C"  # заготовка
-
-# ============================================================
-# 11. ГЕНЕРАЦИЯ ОТВЕТА (LLM)
+# 9. ГЕНЕРАЦИЯ ОТВЕТА (LLM)
 # ============================================================
 
 def generate_response(user_message, user_id):
@@ -273,7 +193,25 @@ def generate_response(user_message, user_id):
     return reply
 
 # ============================================================
-# 12. ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ
+# 10. ЕДИНАЯ ОБРАБОТКА ТЕКСТА (ИСПОЛЬЗУЕТ process_command)
+# ============================================================
+
+def handle_text_common(text, user_id, source="telegram"):
+    """
+    Общая обработка текста.
+    Если process_command вернул None — используем LLM (только для Telegram).
+    """
+    result = process_command(text, source=source)
+    
+    if result["reply"] is None:
+        # Не распознано → LLM (только для Telegram)
+        logger.info(f"🤔 Неизвестный интент, отправляем в LLM: {text}")
+        return generate_response(text, user_id)
+    
+    return result["reply"]
+
+# ============================================================
+# 11. ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ
 # ============================================================
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -319,33 +257,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Слушаю...")
             return
         
-        intent, params = detect_intent(clean_text)
-        
-        if intent == "time":
-            reply = handle_time()
-        elif intent == "date":
-            reply = handle_date()
-        elif intent == "sensor":
-            reply = handle_temperature(params.get("text", ""))
-            if reply is None:
-                reply = "Не понял, какой датчик?"
-        elif intent == "tv_on":
-            success, reply = turn_on_tv()
-        elif intent == "tv_off":
-            success, reply = turn_off_tv()
-        elif intent == "weather":
-            reply = handle_weather(params.get("text", ""))
-        elif intent == "light_on":
-            reply = handle_light_on(params.get("room", "комната"))
-        elif intent == "light_off":
-            reply = handle_light_off(params.get("room", "комната"))
-        elif intent == "volume":
-            reply = handle_volume(params.get("text", ""))
-            if reply is None:
-                reply = generate_response(clean_text, user_id)
-        else:
-            reply = generate_response(clean_text, user_id)
-        
+        # Единая обработка
+        reply = handle_text_common(clean_text, user_id, source="telegram")
         await update.message.reply_text(reply)
         
     except Exception as e:
@@ -353,7 +266,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("😅 Ошибка при распознавании речи. Попробуйте текстом.")
 
 # ============================================================
-# 13. ОБРАБОТЧИКИ КОМАНД
+# 12. ОБРАБОТЧИКИ КОМАНД
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,33 +349,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.chat.send_action(action="typing")
         
-        intent, params = detect_intent(clean_text)
-        
-        if intent == "time":
-            reply = handle_time()
-        elif intent == "date":
-            reply = handle_date()
-        elif intent == "sensor":
-            reply = handle_temperature(params.get("text", ""))
-            if reply is None:
-                reply = "Не понял, какой датчик?"
-        elif intent == "tv_on":
-            success, reply = turn_on_tv()
-        elif intent == "tv_off":
-            success, reply = turn_off_tv()
-        elif intent == "weather":
-            reply = handle_weather(params.get("text", ""))
-        elif intent == "light_on":
-            reply = handle_light_on(params.get("room", "комната"))
-        elif intent == "light_off":
-            reply = handle_light_off(params.get("room", "комната"))
-        elif intent == "volume":
-            reply = handle_volume(params.get("text", ""))
-            if reply is None:
-                reply = generate_response(clean_text, user_id)
-        else:
-            reply = generate_response(clean_text, user_id)
-        
+        reply = handle_text_common(clean_text, user_id, source="telegram")
         await update.message.reply_text(reply)
         
     except Exception as e:
@@ -470,7 +357,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("😅 Ошибка. Попробуйте /clear или подождите.")
 
 # ============================================================
-# 14. ЗАПУСК БОТА
+# 13. ЗАПУСК БОТА
 # ============================================================
 
 def main():

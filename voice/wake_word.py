@@ -7,6 +7,7 @@ import os
 from vosk import Model, KaldiRecognizer
 
 MODEL_PATH = "/home/dima/models/vosk-model-ru"
+#USB_DEVICE = 0  # ← USB-гарнитура
 
 def listen_for_wake_word():
     print("👂 Слушаю... скажите 'Вася'")
