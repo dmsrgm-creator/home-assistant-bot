@@ -172,7 +172,7 @@ def process_command(text, source="telegram"):
     # ============================================================
     if source == "local":
         # Локально — не используем LLM, просто говорим "не понял"
-        return {"reply": "Не понял команду", "speak": True, "success": False, "intent": "unknown"}
+        return {"reply": None, "speak": True, "success": False, "intent": "unknown"}
     else:
         # В Telegram — можно использовать LLM
         return {"reply": None, "speak": False, "success": False, "intent": "unknown"}
